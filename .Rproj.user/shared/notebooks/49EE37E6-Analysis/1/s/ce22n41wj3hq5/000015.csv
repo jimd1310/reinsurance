@@ -1,0 +1,41 @@
+"0","# Display results -------------------------------------------------------------
+rough_point_candidates <- format_candidates(print_candidates(
+  best_prop_point_rough,
+  best_eol_point_rough
+))
+
+rough_ci_candidates <- format_candidates(print_candidates(
+  best_prop_ci_rough,
+  best_eol_ci_rough
+))
+
+kable(
+  rough_point_candidates,
+  digits = 4,
+  col.names = c(
+    ""Policy"",
+    ""Alpha"",
+    ""Deductible"",
+    ""Ruin Probability"",
+    ""CI Lower"",
+    ""CI Upper"",
+    ""Expected Profit""
+  ),
+  caption = ""Rough best contracts under point estimate constraint""
+)
+"
+"0",""
+"0","kable("
+"0","  rough_ci_candidates,"
+"0","  digits = 4,"
+"0","  col.names = c("
+"0","    ""Policy"","
+"0","    ""Alpha"","
+"0","    ""Deductible"","
+"0","    ""Ruin Probability"","
+"0","    ""CI Lower"","
+"0","    ""CI Upper"","
+"0","    ""Expected Profit"""
+"0","  ),"
+"0","  caption = ""Rough best contracts under Wilson upper bound constraint"""
+"0",")"

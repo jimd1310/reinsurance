@@ -1,0 +1,875 @@
+---
+title: "ACTL3162 Assignment 2 Code"
+author: "Jim Denne"
+date: "2025-10-08"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Estimation of Ruin Probability
+
+## Define a function to simulate 1 path for a given time period
+
+Here, $c_0$ is the initial surplus and $\theta$ is the relative security loading. 
+
+```{r chunk1}
+
+c0 <- 50
+theta <- 0.07
+
+```
+
+We assume a Cramér-Lundberg model, where claim frequency follows a Poisson process with rate $\lambda$ and claims sizes are i.i.d. and independent of frequency. For $\text{Exponential} (c)$ and $\text{Gamma} (\gamma , c)$ we use the formulae 
+
+$$
+\mathbb E \left [ Y \right] = \frac{1}{c} \quad \text{and} \quad \mathbb E \left[ Y \right] = \frac{\gamma}{c}
+$$
+to calculate expected value. This allows us to find the premium rate $\pi = \lambda (1 + \theta) \mathbb E [Y]$, so that the surplus $C(t) = c_0 + \pi t - S(t)$ at any time $t$ can be determined by simulating $S(t) \sim \text{CompPois} (\lambda t, G)$ for various claim size distributions $G$. The probability of ruin at any time $t$ is thus 
+$$
+\psi_t(c_0) = P\left( \underset{s \leq t}{\inf} \ C(s) < 0 \, \bigg| \, C(0) = c_0 \right).
+$$
+
+```{r chunk2}
+
+ruin_check <- function(t, lambda, sev_distribution, shape = NULL, rate, 
+                       theta = 0.07) {
+  
+  # Calculate individual expected claim
+  EY <- if (sev_distribution == "exponential") {
+    1 / rate
+  } else if (sev_distribution == "gamma") {
+    shape / rate
+  }
+  # Premium rate
+  pi = (1 + theta) * lambda * EY
+
+  # Number of claims
+  N <- rpois(1, lambda * t)
+  if (N == 0) {
+    return(c(FALSE, pi * t))
+  }
+  
+  # Arrivals
+  arrivals <- sort(runif(N, min = 0, max = t))
+  
+  # Claim size
+  claims <- if (sev_distribution == 'exponential') {
+              rexp(N, rate = rate)
+            } else if (sev_distribution == 'gamma') {
+              rgamma(N, shape = shape, rate = rate)
+            }
+  
+  # Check for ruin
+  surplus <- c0 + pi * arrivals - cumsum(claims)
+  
+  return(any(surplus < 0))
+}
+
+```
+
+## MC Simulations
+
+We can interpret the `ruin_check()` function as essentially an outcome of an indicator random variable, so if we have $n$ draws $I_1, \dots, I_n$ from `ruin_check()` then the sum
+$$
+\frac{I_1 + \dots + I_n}{n}
+$$
+is an estimator for the ruin probability. Furthermore, it's nice to know the expected profit under each scenario. This is given by 
+$$
+\pi t - \mathbb E \left [{S(t)} \right ] = \pi t - \lambda t \mathbb E [Y]. 
+$$
+
+```{r chunk3}
+
+profit <- function(t, lambda, sev_distribution, shape = NULL, rate, theta = 0.07) {
+  # Calculate individual expected claim
+  EY <- if (sev_distribution == "exponential") {
+    1 / rate
+  } else if (sev_distribution == "gamma") {
+    shape / rate
+  }
+  
+  pi <- (1+ theta) * lambda * EY
+  
+  return(pi * t - lambda * t * EY)
+}
+
+```
+
+
+```{r chunk4}
+
+set.seed(3162)
+nsim <- 1e6
+
+# Scenario I
+psi60_I <- mean(replicate(nsim, ruin_check(t = 60, lambda = 2, 
+                                           sev_distribution = "exponential", 
+                                           rate = 0.725)))
+profit_I <- profit(t = 60, lambda = 2, sev_distribution = "exponential", 
+                   rate = 0.725)
+
+# Scenario II
+psi60_II <- mean(replicate(nsim, ruin_check(t = 60, lambda = 2, 
+                                            sev_distribution = "gamma", 
+                                            shape = 0.3162, rate = 0.229245)))
+profit_II <- profit(t = 60, lambda = 2, sev_distribution = "gamma", 
+                    shape = 0.3162, rate = 0.229245)
+
+# Scenario III
+psi60_III <- mean(replicate(nsim, ruin_check(t = 60, lambda = 6, 
+                                             sev_distribution = "exponential", 
+                                             rate = 2.175)))
+profit_III <- profit(t = 60, lambda = 6, sev_distribution = "exponential", 
+                     rate = 2.175)
+
+# Scenario IV
+psi60_IV <- mean(replicate(nsim, ruin_check(t = 60, lambda = 6, 
+                                            sev_distribution = "gamma", 
+                                            shape = 0.5106, rate = 1.110555)))
+profit_IV <- profit(t = 60, lambda = 6, sev_distribution = "gamma", 
+                    shape = 0.5106, rate = 1.110555)
+
+# Display results
+prob_ruin_summary <- data.frame(psi60 = c(psi60_I, psi60_II, psi60_III, psi60_IV),
+                                profit = c(profit_I, profit_II, profit_III, profit_IV))
+prob_ruin_summary <- as.data.frame(t(prob_ruin_summary))
+colnames(prob_ruin_summary) <- c("I", "II", "III", "IV")
+print(prob_ruin_summary)
+
+```
+Evidently, scenario II yields a 5-year ruin probability above $1\%$, so we will conduct analysis on reinsurance products on this scenario. 
+
+# Analysis of Reinsurance Products
+
+## 5 Year Probability of Ruin under reinsurance options A and B
+
+Under a reinsurance policy, the reinsurer pays some function of the claim amount $h(Y)$ whilst the insurer pays $Y - h(Y)$. The reinsurance company charges a reinsurance loading factor of $\xi = 0.1$, resulting in the reinsurance premium rate being $\pi_h = (1 + \xi)\lambda \mathbb E[h(Y)]$. The claim frequency $N(t)$ is unchanged, still distributed as $\text{Poisson}(\lambda t)$. Thus, the surplus under reinsurance at any time $t$ is 
+$$
+C(t) = c_0 + (\pi - \pi_h) t - \sum_{i = 1}^{N(t)} \left( Y_i - h(Y_i) \right).
+$$
+
+```{r chunk5}
+
+xi <- 0.1
+
+```
+
+Define a function to return the expected retained loss for Gamma and Exponential distributions under different policies. The retained loss for $Y \sim \text{Gamma} (\gamma, c)$ under and EoL policy was calculated using the formula from Amin et al. 2022:
+$$
+\mathbb E\left[ Y  \wedge d \, \right] = \frac{\gamma}{c} F_{\gamma + 1, \, c}(d) + d \left( 1 - F_{\gamma, \, c}(d) \right)
+$$
+where $F_{\gamma, c} (\cdot)$ is the cdf of a gamma distribution with shape $\gamma$ and rate $c$. 
+
+```{r chunk6}
+
+policy_expectation <- function(sev_distribution, shape = NULL, 
+                               rate, policy, d = NULL, alpha = NULL) {
+  # Initialise
+  EY_retained <- 0;
+  EY_reinsurer <- 0;
+  
+  if (policy == 'proportional' && sev_distribution == 'exponential') {
+    EY <- 1 / rate
+    EY_retained <- alpha * 1 / rate
+    EY_reinsurer <- EY - EY_retained
+  } else if (policy == 'proportional' && sev_distribution == 'gamma') {
+    EY <- shape / rate
+    EY_retained <- alpha * shape / rate
+    EY_reinsurer <- EY - EY_retained
+  } else if (policy == 'EoL' && sev_distribution == 'exponential') {
+    EY <- 1 / rate
+    EY_retained <- (1 - exp(-rate * d)) / rate
+    EY_reinsurer <- EY - EY_retained
+  } else if (policy == 'EoL' && sev_distribution == 'gamma') {
+    EY <- shape / rate
+    EY_retained <- (shape / rate) * pgamma(d, shape = shape + 1, rate = rate) +
+                    d * (1 - pgamma(d, shape = shape, rate = rate))
+    EY_reinsurer <- EY - EY_retained
+  }
+  # return the total expected claim size, then insurer's, then reinsurer's
+  return(c(EY, EY_retained, EY_reinsurer))
+}
+
+```
+
+Define a function to check for ruin under each policy.
+
+```{r chunk7}
+
+ruin_check_reinsurance <- function(t, lambda, sev_distribution, shape = NULL, 
+                                   rate, policy, d = NULL, alpha = NULL,
+                                   c0 = 50, theta = 0.07, xi = 0.1) {
+  
+  # Find expectations of the reinsurer and insurer
+  EY_all <- policy_expectation(sev_distribution = sev_distribution, shape = shape, 
+                               rate = rate, policy = policy, d = d, alpha = alpha)
+  
+  # Premium rates
+  pi_insurer <- (1 + theta) * lambda * EY_all[1]
+  pi_reinsurer <- (1 + xi) * lambda * EY_all[3]
+  pi <- pi_insurer - pi_reinsurer
+  
+  # Number of claims 
+  N <- rpois(1, lambda * t)
+  if (N == 0) {
+    return(c(FALSE, pi * t))
+  }
+  
+  # Sorted arrival times
+  arrivals <- sort(runif(N, min = 0, max = t))
+  
+  # Claim sizes
+  claims <- if (sev_distribution == 'exponential') {
+    rexp(N, rate = rate)
+  } else if (sev_distribution == 'gamma') {
+    rgamma(N, shape = shape, rate = rate)
+  }
+  
+  claims_retained <- if (policy == 'proportional') {
+    alpha * claims
+  } else if (policy == 'EoL') {
+    pmin(claims, d)
+  }
+  
+  # Check for ruin
+  surplus <- c0 + pi * arrivals - cumsum(claims_retained)
+  return(any(surplus < 0))
+}
+
+```
+
+Also define a function to get the expected profit, given by 
+$$
+\pi_{\text{net}} t - \mathbb E [S(t)] = (\pi - \pi_h ) t - \lambda t \mathbb E [Y - h(Y)]. 
+$$
+
+```{r chunk8}
+
+profit_reinsurance <- function(t, lambda, sev_distribution, shape = NULL, 
+                               rate, policy, d = NULL, alpha = NULL,
+                               c0 = 50, theta = 0.07, xi = 0.1) {
+  
+  # Find expectations of the reinsurer and insurer
+  EY_all <- policy_expectation(sev_distribution = sev_distribution, shape = shape, 
+                               rate = rate, policy = policy, d = d, alpha = alpha)
+  
+  # Premium rates
+  pi_insurer <- (1 + theta) * lambda * EY_all[1]
+  pi_reinsurer <- (1 + xi) * lambda * EY_all[3]
+  pi <- pi_insurer - pi_reinsurer
+  
+  return(pi * t - lambda * t * EY_all[2])
+}
+
+```
+
+### MC Simulations
+
+```{r chunk9}
+
+set.seed(3162)
+nsim <- 1e6
+
+psi60_II_A <- mean(replicate(nsim, ruin_check_reinsurance(t = 60, lambda = 2, 
+                             sev_distribution = 'gamma', shape = 0.3162, 
+                             rate = 0.229245, policy = 'proportional', alpha = 0.71)))
+
+psi60_II_B <- mean(replicate(nsim, ruin_check_reinsurance(t = 60, lambda = 2, 
+                             sev_distribution = 'gamma', shape = 0.3162, 
+                             rate = 0.229245, policy = 'EoL', d = 3.408721)))
+
+profit_A <- profit_reinsurance(t = 60, lambda = 2, 
+                               sev_distribution = 'gamma', shape = 0.3162, 
+                               rate = 0.229245, policy = 'proportional', alpha = 0.71)
+profit_B <- profit_reinsurance(t = 60, lambda = 2, 
+                               sev_distribution = 'gamma', shape = 0.3162, 
+                               rate = 0.229245, policy = 'EoL', d = 3.408721)
+
+prob_ruin_reinsurance_summary <- as.data.frame(t(data.frame(psi60 = 
+                                                            c(psi60_II_A, 
+                                                              psi60_II_B), 
+                                                            profit = 
+                                                            c(profit_A,
+                                                              profit_B))))
+colnames(prob_ruin_reinsurance_summary) <- c("A", "B")
+print(prob_ruin_reinsurance_summary)
+
+```
+
+## Determining the Range of the Amount Retained and Deductible
+
+We require that the insurer's net of reinsurance premium income per unit time $\pi_{\text{net}} = \pi - \pi_h$ be larger than the expected aggregate claims per unit time, to avoid certain ruin. This translates to the Net Profit Condition
+$$
+\pi - \pi_h = (1 + \theta) \lambda \mathbb E[Y] - (1 + \xi) \lambda \mathbb E[h(Y)] > \mathbb E[S(1)] = \lambda \mathbb E[Y - h(Y)].
+$$
+Rearranging this using the linearity of expectation, we get 
+$$
+\xi \, \mathbb E [h(Y)] < \theta \, \mathbb E[Y].
+$$
+
+Under option A, this becomes
+$$
+\alpha > 1 - \frac{\theta}{\xi},
+$$
+which simply evaluates to 
+```{r chunk10}
+
+alpha_min <- 1 - theta / xi
+print(alpha_min)
+
+```
+
+So $\alpha$ is bounded by $0.3$. Under option B the inequality becomes
+$$
+\mathbb E [(Y - d)^+] < \frac{\theta}{\xi} \, \mathbb E [Y]. 
+$$
+Finding $d$ requires numerical computation, which is easier to implement if we rearrange this to 
+$$
+\frac{\mathbb E [(Y - d)^+]}{\mathbb E [Y]} < \frac{\theta}{\xi} = 0.7,
+$$
+so the problem is just finding $d$ such that
+$$
+f(d) = \frac{\mathbb E [(Y - d)^+]}{\mathbb E [Y]} - 0.7 < 0.
+$$
+```{r chunk11}
+
+# Give a range of values for d:
+d <- seq(0, 10, 0.0001)
+
+# Define f(d)
+d_function <- function(d) {
+  E_all <- policy_expectation(sev_distribution = 'gamma', shape = 0.3162, 
+                              rate = 0.229245, policy = 'EoL', d = d)
+  return(E_all[3] / E_all[1] - 0.7)
+}
+
+d_ratio <- sapply(d, d_function)
+plot(d, d_ratio, type = 'l')
+
+# Compute the lower bound
+d_min <- uniroot(d_function, lower = 0, upper = 10)$root
+print(d_min)
+
+```
+Thus, the lower bound for $d$ is roughly $0.8036$. There is no upper bound since $f(d)$ is monotonically decreasing. We have 
+$$
+\alpha > 0.3 \quad \text{and} \quad d > 0.8036.
+$$
+
+## Maximising the Adjustment Coefficient Under Reinsurance Policy
+
+The adjustment coefficient $R$ is given by the first positive solution of $r$ to the equation
+$$
+\mathbb E\left [e^{r(S(t) - \pi_{\text{net}} t )}\right] = 1. 
+$$
+In the Cramér-Lundberg model solving the above is equivalent to solving the Lundberg equation
+$$
+\lambda + \pi_{\text{net}} r - \lambda M_{Y - h(Y)}(r) = 
+1 + r \Big( (1 + \theta) \mathbb E [Y] - (1 + \xi) \mathbb E [h(Y)] \Big) - M_{Y - h(Y)} (r)= 0.
+$$
+We require the two adjustment coefficients $R_A$ and $R_B$ for the two reinsurance options. Under option A the Lundberg equation becomes 
+$$
+1 + r \mathbb E[Y] \Big (1 + \theta - (1 + \xi)(1 - \alpha)\Big) - M_Y (\alpha r) = 0.
+$$
+Using the properties of $\text{Gamma} (\gamma, c)$ we obtain the relevant function to find the roots of: 
+$$
+f_A(r) = 1 + \frac{r \gamma}{c} \Big( 1 + \theta - (1 + \xi) (1 - \alpha)\Big) - \left( \frac{c}{c - \alpha r} \right)^\gamma.
+$$
+Finding the first positive solution of $f_A(r) = 0$ gives $R_A$. Under option B, the Lundberg equation becomes 
+$$
+1 + r \Big((1 + \theta) \mathbb E[Y] - (1 + \xi) \mathbb E[(Y - d)^+] \Big) - M_{Y - h(Y)} (r) = 0.
+$$
+Now, to find the mgf of $Y - h(Y) = \min(Y, d)$ we integrate:
+$$
+M_{Y - h(Y)} (r) = \mathbb E \left [ e^{r \min (Y , d)} \right] = \underbrace{\frac{c^\gamma}{\Gamma (\gamma)} \int_0^d y^{\gamma - 1} e^{-(c - r) y} \,dy}_{Y < d}
++ \underbrace{\frac{c^\gamma e^{rd}}{\Gamma (\gamma)} \int_d^\infty y^{\gamma - 1} e^{-cy} \, dy}_{Y \geq d}
+$$
+For the case where $Y < d$, letting $F_{\gamma, c} (\cdot)$ denote the cdf of $\text{Gamma} (\gamma ,c)$, the integral can be expressed as 
+$$
+\frac{c^\gamma}{\Gamma (\gamma)} \int_0^d y^{\gamma - 1} e^{-(c - r) y} \,dy = 
+\left( \frac{c}{c - r}\right)^\gamma \frac{(c - r)^\gamma}{\Gamma (\gamma)} \int_0^d y^{\gamma - 1} e^{-(c - r) y} \,dy = 
+\left( \frac{c}{c - r}\right)^\gamma F_{\gamma, c - r} (d). 
+$$
+where $c > r$. Similarly, for the case where $Y \geq d$, the integral can be expressed as
+$$
+\frac{c^\gamma e^{rd}}{\Gamma (\gamma)} \int_d^\infty y^{\gamma - 1} e^{-cy} \, dy = e^{rd} \Big( 1 - F_{\gamma, c} (d) \Big).
+$$
+Combining the two results yields
+$$
+M_{Y - h(Y)} (r) = \left( \frac{c}{c - r}\right)^\gamma F_{\gamma, c - r} (d) + e^{rd} \Big( 1 - F_{\gamma, c} (d) \Big).
+$$
+Therefore, to find $R_B$ we will find the first positive root of 
+$$
+f_B(r) = 1 + r \Big((1 + \theta) \mathbb E[Y] - (1 + \xi) \mathbb E[(Y - d)^+] \Big) - 
+\left( \frac{c}{c - r}\right)^\gamma F_{\gamma, c - r} (d) - e^{rd} \Big( 1 - F_{\gamma, c} (d) \Big).
+$$
+
+```{r chunk12}
+
+# Define the parameter values for scenario II
+shape_param <- 0.3162
+rate_param <- 0.229245
+
+# Define a helper function for the EoL mgf
+mgf_EoL <- function(r, d) {
+  (rate_param / (rate_param - r))^shape_param * 
+   pgamma(d, shape = shape_param, rate = rate_param - r) + 
+          exp(r * d) * (1 - pgamma(d, shape = shape_param, rate = rate_param))
+}
+
+# Define f_A and f_B
+r_function_A <- function(r, alpha, theta = 0.07, xi = 0.1) {
+ 1 + ( r * shape_param / rate_param) * (1 + theta - (1 + xi) * (1 - alpha)) - 
+         (rate_param / (rate_param - alpha * r))^shape_param
+}
+
+r_function_B <- function(r, d, theta = 0.07, xi = 0.1) {
+  E_EoL <- policy_expectation(sev_distribution = 'gamma', shape = shape_param, 
+                              rate = rate_param, policy = 'EoL', d = d)
+  1 + r * ((1 + theta) * E_EoL[1] - (1 + xi) * E_EoL[3]) - mgf_EoL(r, d)
+}
+
+# Define functions to find the roots
+find_r_A <- function(alpha, theta = 0.07, xi = 0.1) {
+  
+  if (alpha <= 0) {
+    return(NA)
+  } 
+  # Check if there's a root
+  lower_bound <- 1e-6
+  # There's singularities at these points
+  upper_bound <- rate_param - 1e-8
+  f_lower <- r_function_A(lower_bound, alpha, theta, xi)
+  f_upper <- r_function_A(upper_bound, alpha, theta, xi)
+  if (f_lower * f_upper > 0) {
+    return(NA)
+  }
+  # Return the value
+  uniroot(function(r) r_function_A(r, alpha, theta, xi), lower = lower_bound, 
+          upper = upper_bound)$root
+}
+
+find_r_B <- function(d, theta = 0.07, xi = 0.1) {
+    if (d <= 0) {
+      return(NA)
+    }
+    # Check for roots
+    lower_bound <- 1e-6
+    upper_bound <- rate_param - 1e-8
+    
+    f_lower <- r_function_B(lower_bound, d, theta, xi)
+    f_upper <- r_function_B(upper_bound, d, theta, xi)
+    if (f_lower * f_upper > 0) {
+      return(NA)
+    }
+    # Return the value
+    uniroot(function(r) r_function_B(r, d, theta, xi), lower = lower_bound, 
+            upper = upper_bound)$root
+}
+
+# Apply the functions
+alpha_grid <- seq(alpha_min, 1, 0.0001)
+d_grid <- seq(d_min, 5, 0.0001)
+r_A_values <- sapply(alpha_grid, find_r_A)
+r_B_values <- sapply(d_grid, find_r_B)
+
+# Display results
+plot(alpha_grid, r_A_values, type = 'l')
+plot(d_grid, r_B_values, type = 'l')
+
+R_A <- max(r_A_values, na.rm = TRUE)
+R_B <- max(r_B_values, na.rm = TRUE)
+alpha_max <- alpha_grid[which(r_A_values == R_A)]
+d_max <- d_grid[which(r_B_values == R_B)]
+
+# Find profits
+alpha_max_profit <- profit_reinsurance(t = 60, lambda = 2, sev_distribution = 'gamma', 
+                                       shape = 0.3162, rate = 0.229245, 
+                                       policy = 'proportional', alpha = alpha_max)
+
+d_max_profit <- profit_reinsurance(t = 60, lambda = 2, 
+                                   sev_distribution = 'gamma', shape = 0.3162, 
+                                   rate = 0.229245, policy = 'EoL', d = d_max)
+
+adjustment_coefficient_summary <- data.frame(adjustment_coef = c(R_A, R_B), 
+                                             optimal_policy = c(alpha_max, d_max), 
+                                             upper_bound = c(exp(-c0 * R_A), 
+                                                             exp(-c0 * R_B)), 
+                                             profit = c(alpha_max_profit, 
+                                                        d_max_profit))
+adjustment_coefficient_summary <- as.data.frame(t(adjustment_coefficient_summary))
+colnames(adjustment_coefficient_summary) <- c("A", "B")
+print(adjustment_coefficient_summary)
+
+```
+# Target Survival Probability
+
+We wish to tune the parameters $\alpha$ and $d$ such that the 5-year survival probability reaches $99\%$. We will find $\alpha_{99\%}$ and $d_{99\%}$ so that the estimated 5-year survival probability $\hat p = 1- \hat \psi_{60} (c_0)$ lies in $(0.9895,0.9905)$ with $95\%$ confidence. Therefore, we require the standard error of $\hat p$. Again, since we will estimate this probability using MC simulation via `ruin_check()` our estimator is given by
+$$
+\hat p = \frac{I_1 + \dots + I_n}{n}
+$$
+where the $I_j$'s are all i.i.d. and are the indicators of 5-year survival. Therefore, by the Central Limit Theorem this converges to a Normal distribution with mean $p = 1 - \psi_{60} (c_0)$ and standard deviation
+$$
+\sqrt{\frac{p(1 - p)}{n}}.
+$$
+By Slutsky's theorem the standard error can be approximated by
+$$
+\text{se}(\hat p) \approx \sqrt{\frac{\hat p (1 - \hat p)}{n}},
+$$
+so our pivot is 
+$$
+\frac{\hat p - p}{\sqrt{\hat p (1 - \hat p ) / n}} \sim \mathcal N (0,1),
+$$
+giving us a $95\%$ confidence interval of 
+$$
+\hat p - 1.96 \sqrt{\frac{\hat p (1 - \hat p)}{n}} \leq p \leq \hat p + 1.96 \sqrt{\frac{\hat p (1 - \hat p)}{n}},
+$$
+meaning that 
+$$
+\hat p - 1.96 \sqrt{\frac{\hat p (1 - \hat p)}{n}} = 0.9895 \quad \text{and} \quad \hat p + 1.96 \sqrt{\frac{\hat p (1 - \hat p)}{n}} = 0.9905
+$$
+Here, computation is expensive. We start with less computations to find an approximate range then increase precision. For the required precision level we need $n$ large enough such that 
+$$
+n \geq \left(\frac{1.96}{0.0005} \right)^2 \times 0.01 \times (1 - 0.01) = 152128,
+$$
+so in our final search we will use more than 150k simulations. We will define a function that simulates the probability of ruin:
+
+```{r chunk13}
+
+prob_ruin <- function(nsim, t, lambda, sev_distribution, shape = NULL, rate = NULL,
+                      policy, d = NULL, alpha = NULL,
+                      c0 = 50, theta = 0.07, xi = 0.1) {
+  prob <- mean(replicate(nsim, ruin_check_reinsurance(t, lambda, sev_distribution, 
+                                           shape, rate, policy, d, alpha,
+                                           c0, theta, xi)))
+  return(prob)
+}
+
+```
+
+We will also define a helper to compute standard error:
+
+```{r chunk14}
+
+se <- function(p, n) {
+  sqrt(p * (1 - p) / n)
+}
+
+```
+
+## Finding the Target Retention Rate
+
+From previous results, we've seen that the minimum possible value of $\alpha_{99\%}$ such that ruin is not certain is $0.3$. We've also seen that $\alpha = 0.71$ leads to a ruin probability of $0.018962$, which is much too high. So we guess that $\alpha_{99\%}$ in the range $(0.3, 0.7)$, and use this to conduct our search.
+
+```{r chunk15}
+
+set.seed(3162)
+nsim <- 5e4
+
+# A rough search for alpha based on an educated guess
+alpha_grid_rough <- seq(alpha_min, 0.7, 0.01)
+alpha_search_rough <- sapply(alpha_grid_rough, function(a) prob_ruin(nsim, 
+                                               t = 60, lambda = 2, 
+                                               sev_distribution = "gamma", 
+                                               shape = 0.3162, rate = 0.229245, 
+                                               policy = 'proportional', 
+                                               alpha = a))
+# Find a new range of values to search by filtering
+alpha_prob_rough <- 1 - alpha_search_rough
+alpha_CI_rough <- data.frame(lower = alpha_prob_rough - 
+                             1.96 * se(alpha_prob_rough, nsim), 
+                             upper = alpha_prob_rough + 
+                             1.96 * se(alpha_prob_rough, nsim))
+filter_index_rough <- which(abs(alpha_CI_rough$lower - 0.9895) < 1e-3 &
+                            abs(alpha_CI_rough$upper - 0.9905) < 1e-3)
+alpha_range_rough <- alpha_grid_rough[filter_index_rough]
+
+
+# Final search for alpha
+nsim <- 2e5
+
+alpha_grid_fine <- seq(min(alpha_range_rough), max(alpha_range_rough), 0.001)
+alpha_search_fine <- sapply(alpha_grid_fine, function(a) prob_ruin(nsim, 
+                                             t = 60, lambda = 2, 
+                                             sev_distribution = "gamma", 
+                                             shape = 0.3162, rate = 0.229245, 
+                                             policy = 'proportional', 
+                                             alpha = a))
+# Get the survival probabilities
+alpha_prob_fine <- 1 - alpha_search_fine
+
+# Compute confidence intervals
+alpha_CI_fine <- data.frame(lower = alpha_prob_fine - 
+                          1.96 * se(alpha_prob_fine, nsim), 
+                          upper = alpha_prob_fine + 
+                          1.96 * se(alpha_prob_fine, nsim))
+# Filter
+alpha_filter_index_fine <- which.min(abs(alpha_CI_fine$lower - 0.9895) +
+                                     abs(alpha_CI_fine$upper - 0.9905))
+alpha99 <- alpha_grid_fine[alpha_filter_index_fine]
+
+# Display Results
+profit_alpha99 <- profit_reinsurance(t = 60, lambda = 2, sev_distribution = 'gamma', 
+                                     shape = 0.3162, rate = 0.229245, 
+                                     policy = 'proportional', alpha = alpha99)
+print(cbind(alpha_CI_fine[alpha_filter_index_fine, ], alpha99, profit_alpha99))
+
+```
+## Finding the Target Excess of Loss Deductible
+
+We know from previous results that $d = 3.408721$ leads to a ruin probability of $0.00198$, which is much too low and will give a confidence interval above $(0.9895, 0.9905)$. Therefore, it seems reasonable that $d_{99\%}$ lies in the range $(3.408721, 5.5)$, so we will search this range.
+
+```{r chunk16}
+
+set.seed(3162)
+nsim <- 5e4
+
+# A rough search for d based on an educated guess
+d_grid_rough <- seq(3.4, 5.5, 0.1)
+d_search_rough <- sapply(d_grid_rough, function(d) prob_ruin(nsim, 
+                                       t = 60, lambda = 2, 
+                                       sev_distribution = "gamma", 
+                                       shape = 0.3162, rate = 0.229245, 
+                                       policy = 'EoL', 
+                                       d = d))
+# Find a new range of values to search by filtering
+d_prob_rough <- 1 - d_search_rough
+d_CI_rough <- data.frame(lower = d_prob_rough - 1.96 * se(d_prob_rough, nsim), 
+                         upper = d_prob_rough + 1.96 * se(d_prob_rough, nsim))
+filter_index_rough <- which(abs(d_CI_rough$lower - 0.9895) < 1e-3 &
+                            abs(d_CI_rough$upper - 0.9905) < 1e-3)
+d_range_rough <- d_grid_rough[filter_index_rough]
+
+
+# Final search for d
+nsim <- 2e5
+
+d_grid_fine <- seq(min(d_range_rough), max(d_range_rough), 0.001)
+d_search_fine <- sapply(d_grid_fine, function(d) prob_ruin(nsim, 
+                                             t = 60, lambda = 2, 
+                                             sev_distribution = "gamma", 
+                                             shape = 0.3162, rate = 0.229245, 
+                                             policy = 'EoL', 
+                                             d = d))
+# Get the survival probabilities
+d_prob_fine <- 1 - d_search_fine
+
+# Compute confidence intervals
+d_CI_fine <- data.frame(lower = d_prob_fine - 1.96 * se(d_prob_fine, nsim), 
+                        upper = d_prob_fine + 1.96 * se(d_prob_fine, nsim))
+# Filter
+d_filter_index_fine <- which.min(abs(d_CI_fine$lower - 0.9895) +
+                                 abs(d_CI_fine$upper - 0.9905))
+d99 <- d_grid_fine[d_filter_index_fine]
+
+# Display Results
+profit_d99 <- profit_reinsurance(t = 60, lambda = 2, sev_distribution = 'gamma', 
+                                 shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                                 d = d99)
+print(cbind(d_CI_fine[d_filter_index_fine, ], d99, profit_d99))
+
+```
+
+# Sensitivity Analysis of Model Parameters 
+
+Now, we move on to scenario II with reinsurance product B to conduct a sensitivity analysis. We will produce the following results for the parameters $c_0$, $\theta$, and $\xi$:
+
+1. Shocking parameters to find the change of ruin probability for a percentage change in the parameters.
+
+2. Plots of the Lundberg upper bound for each parameter, with actual ruin probabilities also calculated to test the robustness of the bound.
+
+3. Heatmaps to capture the joint effect of $\theta$ and $\xi$ on the ruin probability and company profitability. 
+
+## Parameter Shock
+
+We perturb each parameter by $\pm \mu x$ and recompute $\psi_{60}$, for some fraction $\mu \in (0, 1)$.
+
+```{r chunk17}
+
+set.seed(3162)
+nsim <- 1e6
+c0 <- 50
+theta <- 0.07
+xi <- 0.1
+
+parameter_shock <- function(parameter, psi, mu, c0, theta, xi) {
+  if (parameter == 'c0') {
+    delta <- mu * c0
+    forward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                         shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                         d = 3.408721, c0 = c0 + delta, theta = theta, xi = xi)
+    backward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                          shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                          d = 3.408721, c0 = c0 - delta, theta = theta, xi = xi)
+  } else if (parameter == 'theta') {
+    delta <- mu * theta
+    forward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                         shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                         d = 3.408721, c0 = c0, theta = theta + delta, xi = xi)
+    backward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                          shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                          d = 3.408721, c0 = c0, theta = theta - delta, xi = xi)
+  } else if (parameter == 'xi') {
+    delta <- mu * xi
+    forward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                         shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                         d = 3.408721, c0 = c0, theta = theta, xi = xi + delta)
+    backward <- prob_ruin(nsim, t = 60, lambda = 2, sev_distribution = 'gamma', 
+                          shape = 0.3162, rate = 0.229245, policy = 'EoL', 
+                          d = 3.408721, c0 = c0, theta = theta, xi = xi - delta)
+  }
+  c(forward - psi, backward - psi)
+}
+
+shock_c0_0.1 <- parameter_shock('c0', psi60_II_B, 0.1, c0, theta, xi)
+shock_theta_0.1 <- parameter_shock('theta', psi60_II_B, 0.1, c0, theta, xi)
+shock_xi_0.1 <- parameter_shock('xi', psi60_II_B, 0.1, c0, theta, xi)
+
+shock_c0_0.2 <- parameter_shock('c0', psi60_II_B, 0.2, c0, theta, xi)
+shock_theta_0.2 <- parameter_shock('theta', psi60_II_B, 0.2, c0, theta, xi)
+shock_xi_0.2 <- parameter_shock('xi', psi60_II_B, 0.2, c0, theta, xi)
+
+shock_summary <- data.frame(shock0.1 = cbind(shock_c0_0.1, 
+                                             shock_theta_0.1, 
+                                             shock_xi_0.1), 
+                            shock0.2 = cbind(shock_c0_0.2, 
+                                             shock_theta_0.2, 
+                                             shock_xi_0.2))
+colnames(shock_summary) <- c("c0 shock 0.1", "theta shock 0.1", "xi shock 0.1",
+                             "c0 shock 0.2", "theta shock 0.2", "xi shock 0.2")
+rownames(shock_summary) <- c("Increase of x", "Decrease of x")
+print(shock_summary)
+
+```
+
+## Lundberg Upper Bounds
+
+We produce the plots for each variable by holding all else fixed. 
+
+```{r chunk18}
+
+c0 <- 50
+theta <- 0.07
+xi <- 0.1
+
+theta_grid <- seq(0, 0.3, 0.001)
+xi_grid <- seq(0, 0.3, 0.001)
+c0_grid <- seq(0, 150, 0.5)
+
+R_theta <- sapply(theta_grid, function(t) find_r_B(3.408721, theta = t, xi = xi))
+R_xi <- sapply(xi_grid, function(x) find_r_B(3.408721, theta = theta, xi = x))
+R_c0 <- find_r_B(3.408721)
+
+ub_theta <- exp(-R_theta * c0)
+ub_xi <- exp(-R_xi * c0)
+ub_c0 <- exp(-R_c0 * c0_grid)
+
+plot(theta_grid, ub_theta, type = 'l')
+plot(xi_grid, ub_xi, type = 'l')
+plot(c0_grid, ub_c0, type = 'l')
+
+```
+
+## Joint Analysis
+
+We will develop heatmaps of $\theta$ and $\xi$ to analyse their joint effects on profit and stability.
+
+```{r chunk19}
+
+set.seed(3162)
+nsim <- 1e5
+c0 <- 50
+theta <- 0.07
+xi <- 0.1
+
+theta_min <- theta_grid[which.max(ub_theta)]
+theta_max <- theta_grid[which.min(ub_theta)]
+xi_min <- xi_grid[which.min(ub_xi)]
+xi_max <- xi_grid[which.max(ub_xi)]
+
+theta_grid_heatmap <- seq(theta_min, 
+                          theta_max, 0.02)
+xi_grid_heatmap <- seq(xi_min, 
+                       xi_max, 0.02)
+
+psi60_heatmap <- matrix(NA, nrow = length(theta_grid_heatmap), 
+                      ncol = length(xi_grid_heatmap))
+profit_heatmap <- matrix(NA, nrow = length(theta_grid_heatmap), 
+                      ncol = length(xi_grid_heatmap))
+ruin_and_profit <- matrix(NA, nrow = 2, ncol = nsim)
+
+for(i in 1:length(theta_grid_heatmap)) {
+  for (j in 1:length(xi_grid_heatmap)) {
+    
+    psi60_heatmap[i, j] <- mean(replicate(nsim, ruin_check_reinsurance(t = 60, lambda = 2, 
+                                 sev_distribution = 'gamma', shape = 0.3162, 
+                                 rate = 0.229245, policy = 'EoL', d = 3.408721, 
+                                 c0 = c0, theta = theta_grid_heatmap[i], 
+                                 xi = xi_grid_heatmap[j])))
+
+     profit_heatmap[i, j] <- profit_reinsurance(t = 60, lambda = 2, 
+                                               sev_distribution = 'gamma', 
+                                               shape = 0.3162, rate = 0.229245, 
+                                               policy = 'EoL', d = 3.408721, 
+                                               c0 = c0, theta = theta_grid_heatmap[i], 
+                                               xi = xi_grid_heatmap[j])
+  }
+}
+
+image(theta_grid_heatmap, xi_grid_heatmap, psi60_heatmap,
+      xlab = "theta", ylab = "xi")
+
+image(theta_grid_heatmap, xi_grid_heatmap, profit_heatmap,
+      xlab = "theta", ylab = "xi")
+
+```
+# Export Results to csv
+
+```{r chunk20}
+
+# Lundberg Graphs
+
+ub_c0_export <- na.omit(data.frame(x = c0_grid, y = ub_c0))
+ub_theta_export <- na.omit(data.frame(x = theta_grid, y = ub_theta))
+ub_xi_export <- na.omit(data.frame(x = xi_grid, y = ub_xi))
+
+write.csv(ub_c0_export, file='/Users/jimdenne/Desktop/LaTeX/UNSW/ACTL3162/Assignment 2/ub_c0.csv', 
+          row.names=FALSE, quote=FALSE)
+write.csv(ub_theta_export, file='/Users/jimdenne/Desktop/LaTeX/UNSW/ACTL3162/Assignment 2/ub_theta.csv', 
+          row.names=FALSE, quote=FALSE)
+write.csv(ub_xi_export, file='/Users/jimdenne/Desktop/LaTeX/UNSW/ACTL3162/Assignment 2/ub_xi.csv', 
+          row.names=FALSE, quote=FALSE)
+
+# Heatmaps
+
+psi60_export <- expand.grid(theta = theta_grid_heatmap, xi = xi_grid_heatmap)
+profit_export <- expand.grid(theta = theta_grid_heatmap, xi = xi_grid_heatmap)
+
+psi60_export$psi60 <- as.vector(psi60_heatmap)
+profit_export$profit<- as.vector(profit_heatmap)
+
+write.csv(psi60_export, 
+          file='/Users/jimdenne/Desktop/LaTeX/UNSW/ACTL3162/Assignment 2/psi60_heatmap.csv', 
+          row.names = FALSE, quote = FALSE)
+write.csv(profit_export, 
+          file='/Users/jimdenne/Desktop/LaTeX/UNSW/ACTL3162/Assignment 2/profit_heatmap.csv', 
+          row.names = FALSE, quote = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
