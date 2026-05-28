@@ -47,22 +47,22 @@ In this setting, excess-of-loss reinsurance is more effective because it targets
 
 The insurer surplus process is modelled as:
 
-[
+\[
 C(t) = c_0 + \pi t - \sum_{i=1}^{N(t)} Y_i
-]
+\]
 
 where:
 
-* (N(t)) follows a Poisson process calibrated from policy exposure and claim counts;
-* (Y_i) is sampled from the empirical claim severity distribution;
-* (c_0) is initial surplus;
-* (\pi) is premium income under an expected value loading.
+* \(N(t)\) follows a Poisson process calibrated from policy exposure and claim counts;
+* \(Y_i\) is sampled from the empirical claim severity distribution;
+* \(c_0\) is initial surplus;
+* \(\pi\) is premium income under an expected value loading.
 
-For excess-of-loss reinsurance with deductible (d):
+For excess-of-loss reinsurance with deductible \(d\):
 
-[
+\[
 Y_{\text{retained}} = \min(Y, d)
-]
+\]
 
 The reinsurance premium is charged using a reinsurer loading on expected ceded losses.
 
